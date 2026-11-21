@@ -68,6 +68,48 @@
       <h2>4. 本次标定结果</h2>
       <div id="resultBody"></div>
     </section>
+
+    <!-- 测点测距 -->
+    <section class="card hidden" id="rangeCard">
+      <h2>5. 测点深度核验</h2>
+      <p class="hint">
+        使用 <b>本批最近一次成功标定</b> 的内外参。填入同一个测点在左、右图中的
+        <b>去畸变像素坐标</b>，以及统一像素容差和允许的深度范围（毫米）。
+        深度沿左相机光轴计量。
+      </p>
+      <div class="row wrap">
+        <label>左图像素 u
+          <input type="number" id="leftU" step="0.01" />
+        </label>
+        <label>左图像素 v
+          <input type="number" id="leftV" step="0.01" />
+        </label>
+        <label>右图像素 u
+          <input type="number" id="rightU" step="0.01" />
+        </label>
+        <label>右图像素 v
+          <input type="number" id="rightV" step="0.01" />
+        </label>
+      </div>
+      <div class="row wrap">
+        <label>像素容差 ±px
+          <input type="number" id="tolInput" min="0" step="0.1" value="1" />
+        </label>
+        <label>允许深度下限 mm
+          <input type="number" id="minDepthInput" min="0" step="10" value="850" />
+        </label>
+        <label>允许深度上限 mm
+          <input type="number" id="maxDepthInput" min="1" step="10" value="1000" />
+        </label>
+      </div>
+      <div class="row wrap">
+        <button id="rangeBtn" class="primary" type="button">核验深度</button>
+        <button id="fillProbeBtn" type="button" class="hidden">填入样例测点</button>
+        <span id="rangeStatus" class="muted"></span>
+      </div>
+      <div id="rangeBasis" class="muted"></div>
+      <div id="rangeBody"></div>
+    </section>
   </main>
 
   <footer>

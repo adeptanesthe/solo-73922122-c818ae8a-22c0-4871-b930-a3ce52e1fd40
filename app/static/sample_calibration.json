@@ -1812,6 +1812,20 @@
     "pair_04"
   ],
   "pixel_threshold": 0.6,
+  "depth_probe": {
+    "note": "测点深度核验的可试算数据：已知测点在左相机坐标系中的位置，左右像素为真实内外参下的去畸变投影（无噪声）",
+    "left_px": [
+      674.3478,
+      462.3261
+    ],
+    "right_px": [
+      426.0071,
+      451.9206
+    ],
+    "tolerance_px": 1.0,
+    "min_depth_mm": 850.0,
+    "max_depth_mm": 1000.0
+  },
   "_ground_truth": {
     "note": "仅用于人工核对，标定算法不读取该字段",
     "R_left_to_right": [
@@ -1837,6 +1851,11 @@
       6.0
     ],
     "right_point_order": "flip_cols",
-    "noisy_pair": "pair_06"
+    "noisy_pair": "pair_06",
+    "probe_point_left_mm": [
+      30.0,
+      -20.0,
+      920.0
+    ]
   }
 }

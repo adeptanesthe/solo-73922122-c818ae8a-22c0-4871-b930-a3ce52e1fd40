@@ -8,8 +8,10 @@
 样例设计：
   - 6 对同步图，board = 7x5 内角点，格距 25 mm；
   - 右图角点列整体为“列倒序”（flip_cols，维修现场最常见的倒序情形）；
-  - pair_05 注入很大的噪声，用于演示“没有排序达标 → 保留上次结果”；
-  - 前 5 对任选 >=3 对且阈值取 0.6 px 时可唯一标定成功。
+  - pair_06 注入很大的噪声，用于演示“没有排序达标 → 保留上次结果”；
+  - 前 5 对任选 >=3 对且阈值取 0.6 px 时可唯一标定成功；
+  - depth_probe 给出一个已知三维测点（左相机坐标系 (30,-20,920) mm）的
+    左右去畸变像素，供“测点深度核验”一键试算。
 """
 
 from __future__ import annotations
@@ -108,6 +110,20 @@ def main() -> None:
             "right_pts": [[round(float(x), 4), round(float(y), 4)] for x, y in q_r],
         })
 
+    # 测点深度核验的可试算数据：测点在左相机坐标系下的真实位置，
+    # 用真实内外参正投影出左右去畸变像素坐标（不含检测噪声）。
+    probe_left = np.array([30.0, -20.0, 920.0], np.float64)
+    probe_rvec = np.zeros(3)  # 左相机坐标系即世界坐标系
+    q_l, _ = cv2.projectPoints(
+        probe_left.reshape(1, 3), probe_rvec, np.zeros(3), K_l, np.zeros(5)
+    )
+    q_r, _ = cv2.projectPoints(
+        R_true @ probe_left + T_true.ravel(), probe_rvec, np.zeros(3),
+        K_r, np.zeros(5),
+    )
+    q_l = q_l.reshape(2)
+    q_r = q_r.reshape(2)
+
     payload = {
         "description": (
             "双目外参标定样例：右图角点为整体列倒序(flip_cols)；"
@@ -125,12 +141,24 @@ def main() -> None:
         "image_pairs": pairs,
         "selected_pair_ids": [p["pair_id"] for p in pairs[:4]],
         "pixel_threshold": 0.6,
+        "depth_probe": {
+            "note": (
+                "测点深度核验的可试算数据：已知测点在左相机坐标系中的位置，"
+                "左右像素为真实内外参下的去畸变投影（无噪声）"
+            ),
+            "left_px": [round(float(q_l[0]), 4), round(float(q_l[1]), 4)],
+            "right_px": [round(float(q_r[0]), 4), round(float(q_r[1]), 4)],
+            "tolerance_px": 1.0,
+            "min_depth_mm": 850.0,
+            "max_depth_mm": 1000.0,
+        },
         "_ground_truth": {
             "note": "仅用于人工核对，标定算法不读取该字段",
             "R_left_to_right": np.round(R_true, 8).tolist(),
             "T_left_to_right": np.round(T_true.ravel(), 6).tolist(),
             "right_point_order": "flip_cols",
             "noisy_pair": "pair_06",
+            "probe_point_left_mm": np.round(probe_left, 6).tolist(),
         },
     }
 

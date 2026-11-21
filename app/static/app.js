@@ -3,6 +3,10 @@
 const state = {
   payload: null,      // 上传的完整 JSON
   threshold: 0.6,
+  sessionId: null,
+  calibToken: null,   // 成功标定后由后端签发；换批/重标都会变
+  rangeSeq: 0,        // 单调递增，迟到的旧请求结果一律丢弃
+  probe: null,        // 样例中的可试算测点
 };
 
 const $ = (id) => document.getElementById(id);
@@ -55,6 +59,13 @@ $("loadSampleBtn").addEventListener("click", async () => {
 });
 
 function renderUploaded(meta) {
+  // 换批：撤下旧测距结果并让在途请求作废
+  state.sessionId = meta.session_id;
+  state.calibToken = null;
+  state.rangeSeq = 0;
+  state.probe = state.payload?.depth_probe ?? null;
+  clearRangeResult();
+
   $("sessionInfo").textContent = `批次 ${meta.session_id} · ${meta.image_pairs.length} 对图`;
   $("metaJson").textContent = JSON.stringify({
     board: meta.board,
@@ -81,8 +92,18 @@ function renderUploaded(meta) {
   updateSelection();
   $("configCard").classList.remove("hidden");
   $("runCard").classList.remove("hidden");
+  $("rangeCard").classList.remove("hidden");
+  $("rangeBtn").disabled = true;
+  $("rangeBasis").textContent = "本批尚无成功标定结果，请先执行标定。";
+  $("fillProbeBtn").classList.toggle("hidden", !state.probe);
   renderLastSuccess(meta.last_success);
   $("resultCard").classList.add("hidden");
+}
+
+function clearRangeResult() {
+  $("rangeBody").innerHTML = "";
+  $("rangeBtn").disabled = true;
+  $("rangeBasis").textContent = "本批尚无成功标定结果，请先执行标定。";
 }
 
 function selectedIds() {
@@ -115,7 +136,11 @@ $("runBtn").addEventListener("click", async () => {
       selected_pair_ids: ids,
       pixel_threshold: threshold,
     },
+    session_id: state.sessionId,   // 换批后迟到的标定结果不得写入新批次
   };
+  // 输入变化：旧测距结果立即撤下，在途旧请求也不再回填
+  state.rangeSeq += 1;
+  clearRangeResult();
   $("runStatus").textContent = "计算中…";
   $("runBtn").disabled = true;
   try {
@@ -128,6 +153,22 @@ $("runBtn").addEventListener("click", async () => {
     if (!resp.ok) throw new Error(body.detail || "标定请求失败");
     renderResult(body);
     renderLastSuccess(body.last_success);
+    if (body.success && body.accepted) {
+      state.calibToken = body.calib_token;
+      $("rangeBtn").disabled = false;
+      $("rangeBasis").textContent =
+        `当前基准：排序 ${body.accepted.order_name} · 使用图对 `
+        + `${body.accepted.selected_pair_ids.join("、")} · 联合 RMSE `
+        + `${fmt(body.accepted.overall_rms, 4)} px。标定变了需重新核验。`;
+    } else if (body.last_success) {
+      // 试标失败：仍可用本批保留的标定测距
+      state.calibToken = body.last_success.calib_token;
+      $("rangeBtn").disabled = false;
+      const a = body.last_success.result;
+      $("rangeBasis").textContent =
+        `本次试标未更新结果；测距沿用本批上次成功标定（排序 ${a.order_name} · `
+        + `使用图对 ${a.selected_pair_ids.join("、")}）。`;
+    }
   } catch (err) {
     alert(`标定失败：${err.message}`);
   } finally {
@@ -221,6 +262,7 @@ function renderLastSuccess(last) {
   const card = $("lastSuccessCard");
   if (!last) {
     card.classList.add("hidden");
+    state.calibToken = null;
     return;
   }
   card.classList.remove("hidden");
@@ -235,4 +277,148 @@ function renderLastSuccess(last) {
       <div><h3>T</h3>${matrixHtml(a.T)}</div>
     </div>
     ${pairTableHtml(a.pairs, a.threshold)}`;
+}
+
+// ---- 测点深度核验 -----------------------------------------------------------
+
+const RANGE_FIELDS = ["leftU", "leftV", "rightU", "rightV",
+  "tolInput", "minDepthInput", "maxDepthInput"];
+
+// 输入一改就撤下旧结果（内容变化才算变化）
+RANGE_FIELDS.forEach((id) => {
+  $(id).addEventListener("input", () => {
+    state.rangeSeq += 1;   // 让在途请求作废
+    $("rangeBody").innerHTML = "";
+  });
+});
+
+$("fillProbeBtn").addEventListener("click", () => {
+  const p = state.probe;
+  if (!p) return;
+  $("leftU").value = p.left_px[0];
+  $("leftV").value = p.left_px[1];
+  $("rightU").value = p.right_px[0];
+  $("rightV").value = p.right_px[1];
+  $("tolInput").value = p.tolerance_px;
+  $("minDepthInput").value = p.min_depth_mm;
+  $("maxDepthInput").value = p.max_depth_mm;
+  state.rangeSeq += 1;
+  $("rangeBody").innerHTML = "";
+});
+
+function readRangeInputs() {
+  const nums = ["leftU", "leftV", "rightU", "rightV",
+    "tolInput", "minDepthInput", "maxDepthInput"].map((id) => {
+    const raw = $(id).value.trim();
+    if (raw === "") return NaN;
+    return Number(raw);
+  });
+  const [lu, lv, ru, rv, tol, dmin, dmax] = nums;
+  if (nums.some((x) => !Number.isFinite(x))) return { error: "请填写全部数值" };
+  if (tol < 0) return { error: "像素容差必须是非负数" };
+  if (dmin < 0) return { error: "深度下限必须是非负数" };
+  if (!(dmax > 0)) return { error: "深度上限必须为正数" };
+  if (dmin >= dmax) return { error: "深度下限必须小于上限" };
+  return {
+    left_px: [lu, lv], right_px: [ru, rv],
+    tolerance_px: tol, min_depth_mm: dmin, max_depth_mm: dmax,
+  };
+}
+
+$("rangeBtn").addEventListener("click", async () => {
+  if (!state.calibToken) {
+    alert("本批尚无成功标定结果，无法测距");
+    return;
+  }
+  const inputs = readRangeInputs();
+  if (inputs.error) {
+    alert(inputs.error);
+    return;
+  }
+  const seq = ++state.rangeSeq;
+  const token = state.calibToken;
+  $("rangeBody").innerHTML = "";
+  $("rangeStatus").textContent = "计算中…";
+  $("rangeBtn").disabled = true;
+  try {
+    const resp = await fetch("/api/range", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: state.sessionId,
+        calib_token: token,
+        request_seq: seq,
+        ...inputs,
+      }),
+    });
+    const body = await resp.json();
+    // 迟到判定：输入已变 / 重标 / 换批 / 有更新的请求 -> 丢弃，不回填
+    if (seq !== state.rangeSeq || token !== state.calibToken) return;
+    if (!resp.ok) throw new Error(body.detail || "测距请求失败");
+    renderRange(body);
+  } catch (err) {
+    if (seq === state.rangeSeq) alert(`测距失败：${err.message}`);
+  } finally {
+    // 即便本次请求已过期，也要恢复按钮；否则改过输入后按钮会一直禁用
+    $("rangeStatus").textContent = "";
+    $("rangeBtn").disabled = !state.calibToken;
+  }
+});
+
+function renderRange(body) {
+  const r = body.range;
+  const v = body.verdict;
+  let rangeText;
+  if (r.status === "no_solution") {
+    rangeText = "无可行位置";
+  } else if (r.status === "unbounded") {
+    rangeText = `[${fmt(r.z_min_mm, 1)}, +∞) mm`;
+  } else {
+    rangeText = `[${fmt(r.z_min_mm, 1)}, ${fmt(r.z_max_mm, 1)}] mm`;
+  }
+  const cls = v.usable ? "ok" : "err";
+  const verdictText = v.usable ? "可用" : "不可用，请复测";
+  $("rangeStatus").textContent = "";
+
+  let checkRows;
+  if (r.status === "bounded") {
+    const below = r.z_min_mm < body.input.min_depth_mm;
+    const above = r.z_max_mm > body.input.max_depth_mm;
+    checkRows = `
+      <tr><td>近端 ≥ 允许下限</td>
+          <td>${fmt(r.z_min_mm, 1)} vs ${fmt(body.input.min_depth_mm, 0)}</td>
+          <td><span class="tag ${below ? "bad" : "ok"}">${below ? "越界" : "满足"}</span></td></tr>
+      <tr><td>远端 ≤ 允许上限</td>
+          <td>${fmt(r.z_max_mm, 1)} vs ${fmt(body.input.max_depth_mm, 0)}</td>
+          <td><span class="tag ${above ? "bad" : "ok"}">${above ? "越界" : "满足"}</span></td></tr>`;
+  } else if (r.status === "unbounded") {
+    checkRows = `
+      <tr><td>近端</td><td>${fmt(r.z_min_mm, 1)} mm</td>
+          <td><span class="tag bad">已越下限</span></td></tr>
+      <tr><td>远端 ≤ 允许上限</td><td>无上界</td>
+          <td><span class="tag bad">无法确认</span></td></tr>`;
+  } else {
+    checkRows = `<tr><td>可行位置</td><td>不存在</td>
+      <td><span class="tag bad">无解</span></td></tr>`;
+  }
+
+  $("rangeBody").innerHTML = `
+    <div class="banner ${cls}">
+      <b>${verdictText}</b> · 深度区间 ${rangeText}<br>${v.message}
+    </div>
+    <p class="muted">
+      状态：<code>${r.status}</code> · 像素容差 ±${fmt(r.tolerance_px, 2)} px ·
+      基准标定：排序 ${body.calibration_basis.order_name}，
+      使用图对 ${body.calibration_basis.selected_pair_ids.join("、")}
+    </p>
+    <h3>判定明细</h3>
+    <table><thead><tr><th>检查项</th><th>数值</th><th>结论</th></tr></thead>
+      <tbody>${checkRows}</tbody></table>
+    <details class="meta"><summary>输入与区间原始数值</summary>
+      <pre>${JSON.stringify({
+        input: body.input,
+        range: body.range,
+        verdict: { usable: body.verdict.usable, code: body.verdict.code },
+      }, null, 2)}</pre>
+    </details>`;
 }
